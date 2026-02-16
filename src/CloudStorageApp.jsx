@@ -525,27 +525,32 @@ export default function CloudStorageApp() {
       setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleCloudImport = (provider) => {
+  const handleCloudImport = async (provider) => {
       setIsUploadModalOpen(false);
       showToast(`Connecting to ${provider}...`);
-      
-      // Simulate network request and import
-      setTimeout(() => {
-          const newFile = {
-              id: Math.random().toString(36).substr(2, 9),
-              parentId: currentFolder,
-              name: `${provider}_Import_Doc_${Math.floor(Math.random() * 1000)}.pdf`,
-              type: 'file',
-              fileType: 'pdf',
-              size: '4.2 MB',
-              date: new Date().toISOString().split('T')[0],
-              starred: false,
-              isTrashed: false,
-              previewUrl: null
-          };
-          setFiles(prev => [...prev, newFile]);
-          showToast(`Successfully imported file from ${provider}`);
-      }, 2500);
+
+      try {
+          let authUrl;
+
+          if (provider === 'Google Drive') {
+              const response = await api.getGoogleAuthUrl();
+              authUrl = response.data.authUrl;
+          } else if (provider === 'OneDrive') {
+              const response = await api.getMicrosoftAuthUrl();
+              authUrl = response.data.authUrl;
+          } else if (provider === 'Dropbox') {
+              const response = await api.getDropboxAuthUrl();
+              authUrl = response.data.authUrl;
+          }
+
+          if (authUrl) {
+              // Redirect to OAuth page
+              window.location.href = authUrl;
+          }
+      } catch (error) {
+          console.error('Error initiating OAuth:', error);
+          showToast(`Failed to connect to ${provider}`);
+      }
   };
 
   const handleLogin = (email) => {
@@ -706,21 +711,31 @@ export default function CloudStorageApp() {
     e.target.value = '';
   };
 
-  const createFolder = () => {
+  const createFolder = async () => {
     if (!newFolderName.trim()) return;
-    const newFolder = {
-      id: Math.random().toString(36).substr(2, 9),
-      parentId: currentFolder,
-      name: newFolderName,
-      type: 'folder',
-      size: '--',
-      date: new Date().toISOString().split('T')[0],
-      starred: false,
-      isTrashed: false
-    };
-    setFiles(prev => [...prev, newFolder]);
-    setNewFolderName('');
-    setIsCreateFolderOpen(false);
+
+    try {
+      const response = await api.createFolder(newFolderName, currentFolder);
+      if (response.success) {
+        const folder = response.data;
+        const newFolder = {
+          id: folder.id,
+          parentId: folder.parentId,
+          name: folder.name,
+          type: 'folder',
+          date: new Date(folder.createdAt).toISOString().split('T')[0],
+          color: folder.color || '#4F46E5',
+          isTrashed: folder.isTrashed,
+          backendId: folder.id,
+        };
+        setFiles(prev => [...prev, newFolder]);
+        setNewFolderName('');
+        setIsCreateFolderOpen(false);
+        showToast('Folder created successfully');
+      }
+    } catch (error) {
+      showToast('Failed to create folder');
+    }
   };
 
   const createAlbum = () => {
@@ -754,13 +769,17 @@ export default function CloudStorageApp() {
     if (!renameValue.trim() || !renameItem) return;
 
     try {
-      await api.updateFile(renameItem.id, { name: renameValue });
+      if (renameItem.type === 'folder') {
+        await api.updateFolder(renameItem.id, { name: renameValue });
+      } else {
+        await api.updateFile(renameItem.id, { name: renameValue });
+      }
       setFiles(files.map(f => f.id === renameItem.id ? { ...f, name: renameValue } : f));
       setRenameItem(null);
       setRenameValue('');
-      showToast('File renamed successfully');
+      showToast(`${renameItem.type === 'folder' ? 'Folder' : 'File'} renamed successfully`);
     } catch (error) {
-      showToast('Failed to rename file');
+      showToast(`Failed to rename ${renameItem.type === 'folder' ? 'folder' : 'file'}`);
     }
   };
 
@@ -828,9 +847,14 @@ export default function CloudStorageApp() {
 
     for (const id of idsToDelete) {
       try {
-        await api.deleteFile(id);
+        const item = files.find(f => f.id === id);
+        if (item.type === 'folder') {
+          await api.deleteFolder(id);
+        } else {
+          await api.deleteFile(id);
+        }
       } catch (error) {
-        console.error('Error deleting file:', error);
+        console.error('Error deleting:', error);
       }
     }
 
@@ -915,7 +939,6 @@ export default function CloudStorageApp() {
     setIsAuthenticated(false);
     setIsLoginModalOpen(true);
     setFiles([]);
-    setFolders([]);
     setUserProfile({
       name: 'User',
       email: '',
@@ -931,6 +954,8 @@ export default function CloudStorageApp() {
   // Load files and folders from backend
   const loadFilesAndFolders = async () => {
     try {
+      const allItems = [];
+
       // Load all files
       const filesResponse = await api.getFiles({ trashed: false });
       if (filesResponse.success) {
@@ -945,10 +970,10 @@ export default function CloudStorageApp() {
           starred: file.isStarred,
           isTrashed: file.isTrashed,
           previewUrl: file.url,
-          rawFile: null, // Files from backend don't have rawFile
-          backendId: file.id, // Store backend ID for API calls
+          rawFile: null,
+          backendId: file.id,
         }));
-        setFiles(apiFiles);
+        allItems.push(...apiFiles);
       }
 
       // Load all folders
@@ -962,10 +987,12 @@ export default function CloudStorageApp() {
           date: new Date(folder.createdAt).toISOString().split('T')[0],
           color: folder.color || '#4F46E5',
           isTrashed: folder.isTrashed,
-          backendId: folder.id, // Store backend ID
+          backendId: folder.id,
         }));
-        setFolders(apiFolders);
+        allItems.push(...apiFolders);
       }
+
+      setFiles(allItems);
     } catch (error) {
       console.error('Error loading files and folders:', error);
       showToast('Failed to load files');
@@ -1005,6 +1032,24 @@ export default function CloudStorageApp() {
     };
 
     checkAuth();
+  }, []);
+
+  // Handle OAuth callback
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const provider = urlParams.get('provider');
+    const status = urlParams.get('status');
+
+    if (provider && status) {
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
+
+      if (status === 'success') {
+        showToast(`${provider.charAt(0).toUpperCase() + provider.slice(1)} connected successfully!`);
+      } else {
+        showToast(`Failed to connect ${provider}`);
+      }
+    }
   }, []);
 
   const handlePasswordChange = () => {
@@ -1230,31 +1275,21 @@ export default function CloudStorageApp() {
       }
   };
 
-  const downloadFile = (file) => {
-    let url = file.previewUrl;
-    let shouldRevoke = false;
-
-    if (!url) {
-      if (file.rawFile) {
-          url = URL.createObjectURL(file.rawFile);
-          shouldRevoke = true;
-      } else {
-          const content = `This is the mock content for ${file.name}.\n\nFile Type: ${file.fileType}\nSize: ${file.size}\nDate: ${file.date}`;
-          const blob = new Blob([content], { type: 'text/plain' });
-          url = URL.createObjectURL(blob);
-          shouldRevoke = true;
+  const downloadFile = async (file) => {
+    try {
+      // Get presigned URL from backend
+      const response = await api.downloadFile(file.id);
+      if (response.success) {
+        const a = document.createElement('a');
+        a.href = response.data.downloadUrl;
+        a.download = response.data.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
       }
-    }
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    if (shouldRevoke) {
-      setTimeout(() => URL.revokeObjectURL(url), 100);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      showToast('Failed to download file');
     }
   };
 
