@@ -111,22 +111,24 @@ const callGeminiAPI = async (prompt, imageBase64 = null, mimeType = null) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        
+
         const data = await response.json();
         if (data.error) throw new Error(data.error.message);
         return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
     } catch (error) {
-        console.error("Gemini API Error:", error);
         return "I couldn't process that request right now. Please try again.";
     }
 };
 
 const callImagenAPI = async (prompt) => {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${GEMINI_API_KEY}`;
-    
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:generateImages?key=${GEMINI_API_KEY}`;
+
     const payload = {
-        instances: [{ prompt: prompt }],
-        parameters: { sampleCount: 1 }
+        prompt: prompt,
+        number_of_images: 1,
+        aspect_ratio: "1:1",
+        safety_filter_level: "block_some",
+        person_generation: "allow_adult"
     };
 
     try {
@@ -135,17 +137,47 @@ const callImagenAPI = async (prompt) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        
+
         const data = await response.json();
-        if (data.error) throw new Error(data.error.message);
-        
-        const base64 = data.predictions?.[0]?.bytesBase64Encoded;
+        if (data.error) throw new Error(data.error.message || "Failed to generate image");
+
+        const base64 = data.generatedImages?.[0]?.imageBytes;
         if (!base64) throw new Error("No image generated");
-        
+
         return `data:image/png;base64,${base64}`;
     } catch (error) {
-        console.error("Imagen API Error:", error);
-        throw error;
+        throw new Error(`Image generation failed: ${error.message}`);
+    }
+};
+
+const callVeoAPI = async (prompt) => {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-fast-generate-preview:generateVideo?key=${GEMINI_API_KEY}`;
+
+    const payload = {
+        prompt: prompt,
+        config: {
+            duration_seconds: 8,
+            aspect_ratio: "16:9",
+            enable_audio: true
+        }
+    };
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message || "Failed to generate video");
+
+        const videoBase64 = data.generatedVideo?.videoBytes;
+        if (!videoBase64) throw new Error("No video generated");
+
+        return `data:video/mp4;base64,${videoBase64}`;
+    } catch (error) {
+        throw new Error(`Video generation failed: ${error.message}`);
     }
 };
 
@@ -804,16 +836,22 @@ export default function CloudStorageApp() {
 
   const handleGeneration = async () => {
       if (!generationPrompt.trim()) return;
+
+      if (!GEMINI_API_KEY) {
+          showToast("Please add your Gemini API key in the .env file to use AI generation features");
+          return;
+      }
+
       setIsGenerating(true);
 
       try {
           if (generationType === 'image') {
               const imageDataUrl = await callImagenAPI(generationPrompt);
-              
+
               const newFile = {
                   id: Math.random().toString(36).substr(2, 9),
                   parentId: currentFolder,
-                  name: `AI_Gen_${Date.now()}.png`,
+                  name: `AI_Image_${Date.now()}.png`,
                   type: 'file',
                   fileType: 'image',
                   size: '1.2 MB',
@@ -825,8 +863,10 @@ export default function CloudStorageApp() {
               setFiles(prev => [...prev, newFile]);
               setIsGenerateModalOpen(false);
               setGenerationPrompt("");
+              showToast("Image generated successfully!");
           } else {
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              const videoDataUrl = await callVeoAPI(generationPrompt);
+
               const newFile = {
                   id: Math.random().toString(36).substr(2, 9),
                   parentId: currentFolder,
@@ -837,15 +877,15 @@ export default function CloudStorageApp() {
                   date: new Date().toISOString().split('T')[0],
                   starred: false,
                   isTrashed: false,
-                  previewUrl: null
+                  previewUrl: videoDataUrl
               };
               setFiles(prev => [...prev, newFile]);
               setIsGenerateModalOpen(false);
               setGenerationPrompt("");
-              alert("Video generation simulated! File added.");
+              showToast("Video generated successfully!");
           }
       } catch (error) {
-          alert("Generation failed: " + error.message);
+          showToast(error.message || "Generation failed. Please try again.");
       } finally {
           setIsGenerating(false);
       }
@@ -1631,7 +1671,7 @@ export default function CloudStorageApp() {
                           className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${generationType === 'image' ? 'border-b-2 border-purple-500 text-purple-600 dark:text-purple-400' : `${textSec} hover:bg-gray-50 dark:hover:bg-gray-800`}`}
                       >
                           <ImageIcon className="w-4 h-4" />
-                          Imagen 4
+                          Imagen 3
                       </button>
                       <button 
                           onClick={() => setGenerationType('video')}
@@ -1656,9 +1696,9 @@ export default function CloudStorageApp() {
                       </div>
 
                       {generationType === 'video' && (
-                          <div className={`p-3 rounded-lg text-sm mb-4 ${userProfile.darkMode ? 'bg-yellow-900/20 text-yellow-200' : 'bg-yellow-50 text-yellow-800'}`}>
-                              <p className="font-semibold">Veo Beta:</p>
-                              <p className="opacity-90">Veo generation is not yet available in this environment. A simulated preview will be created for demonstration.</p>
+                          <div className={`p-3 rounded-lg text-sm mb-4 ${userProfile.darkMode ? 'bg-blue-900/20 text-blue-200' : 'bg-blue-50 text-blue-800'}`}>
+                              <p className="font-semibold">Veo 3.1 Fast:</p>
+                              <p className="opacity-90">Generates 8-second 720p videos with audio. Video generation may take 30-60 seconds.</p>
                           </div>
                       )}
 
@@ -1674,7 +1714,7 @@ export default function CloudStorageApp() {
                           {isGenerating ? (
                               <>
                                   <Loader2 className="w-5 h-5 animate-spin" />
-                                  Creating with {generationType === 'image' ? 'Imagen 4' : 'Veo'}...
+                                  Creating with {generationType === 'image' ? 'Imagen 3' : 'Veo 3.1'}...
                               </>
                           ) : (
                               <>

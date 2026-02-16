@@ -6,10 +6,10 @@ A self-hosted cloud storage interface built with React, Vite, and Tailwind CSS. 
 
 - **File Management** — Upload, download, rename, move, star, and trash files and folders
 - **Gallery & Albums** — Visual gallery view with album organisation for images and videos
-- **AI Features** — File summaries, image analysis, and AI image generation (via Gemini API)
+- **AI Features** — File summaries, image analysis, image generation (Imagen 3), and video generation (Veo 3.1 Fast)
 - **Dark Mode** — Full dark/light theme toggle
 - **Responsive** — Desktop sidebar with mobile-friendly layout
-- **Cloud Import** — Simulated import from Google Drive, OneDrive, Dropbox
+- **Cloud Import** — Simulated import from Google Drive, OneDrive, Dropbox (demo only)
 
 ## Quick Start (Local Development)
 
@@ -35,9 +35,11 @@ The app will be available at `http://localhost:3000`.
 
 | Variable | Description | Required |
 |---|---|---|
-| `VITE_GEMINI_API_KEY` | Google Gemini API key for AI features | Optional (AI features won't work without it) |
+| `VITE_GEMINI_API_KEY` | Google Gemini API key for AI features (file summaries, image analysis, Imagen 3 image generation, Veo 3.1 video generation) | Optional (AI features won't work without it) |
 
 Get a Gemini API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+**Note:** Imagen 3 and Veo 3.1 require an API key with access to these models. Video generation may take 30-60 seconds per video.
 
 ## Build for Production
 
@@ -91,7 +93,9 @@ git pull origin main
 - **Vite 6** — Build tool and dev server
 - **Tailwind CSS 3** — Utility-first styling
 - **Lucide React** — Icon library
-- **Google Gemini API** — AI summaries, image analysis, image generation
+- **Google Gemini API** — AI summaries, image analysis
+- **Google Imagen 3** — AI image generation
+- **Google Veo 3.1 Fast** — AI video generation (8-second clips with audio)
 
 ## Project Structure
 
