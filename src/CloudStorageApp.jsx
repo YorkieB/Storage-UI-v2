@@ -484,8 +484,11 @@ export default function CloudStorageApp() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
   const [previewFile, setPreviewFile] = useState(null);
+  const [previewFileContent, setPreviewFileContent] = useState(null);
   const [renameItem, setRenameItem] = useState(null);
-  
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [shareLink, setShareLink] = useState('');
+
   // Delete Confirmation State
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   
@@ -660,9 +663,29 @@ export default function CloudStorageApp() {
       .filter(f => f.type === 'file' && f.parentId === currentFolder && !f.isTrashed)
       .map(f => f.name.toLowerCase());
 
+    // Helper function to generate unique filename
+    const getUniqueFileName = (originalName, existingNames) => {
+      let fileName = originalName;
+      let counter = 1;
+
+      // Split filename and extension
+      const lastDotIndex = originalName.lastIndexOf('.');
+      const name = lastDotIndex > 0 ? originalName.substring(0, lastDotIndex) : originalName;
+      const ext = lastDotIndex > 0 ? originalName.substring(lastDotIndex) : '';
+
+      // Keep incrementing counter until we find a unique name
+      while (existingNames.includes(fileName.toLowerCase())) {
+        fileName = `${name} (${counter})${ext}`;
+        counter++;
+      }
+
+      return fileName;
+    };
+
     // Validate files
     const validFiles = [];
     const errors = [];
+    const renamedFiles = [];
 
     for (const file of uploadedFiles) {
       // Check file type
@@ -671,13 +694,21 @@ export default function CloudStorageApp() {
         continue;
       }
 
-      // Check for duplicates
+      // Auto-rename if duplicate
+      let finalFileName = file.name;
       if (existingFileNames.includes(file.name.toLowerCase())) {
-        errors.push(`${file.name}: A file with this name already exists`);
-        continue;
+        finalFileName = getUniqueFileName(file.name, existingFileNames);
+        renamedFiles.push({ original: file.name, renamed: finalFileName });
+        // Add the new name to existing names to prevent conflicts with subsequent uploads
+        existingFileNames.push(finalFileName.toLowerCase());
       }
 
-      validFiles.push(file);
+      // Create a new File object with the updated name if renamed
+      const finalFile = finalFileName !== file.name
+        ? new File([file], finalFileName, { type: file.type })
+        : file;
+
+      validFiles.push(finalFile);
     }
 
     // Show errors if any
@@ -693,26 +724,45 @@ export default function CloudStorageApp() {
 
     // Upload valid files
     if (validFiles.length > 0) {
-      const newFiles = validFiles.map(file => ({
-        id: Math.random().toString(36).substr(2, 9),
-        parentId: currentFolder,
-        name: file.name,
-        type: 'file',
-        fileType: getFileType(file.type),
-        size: formatSize(file.size),
-        date: new Date().toISOString().split('T')[0],
-        starred: false,
-        isTrashed: false,
-        previewUrl: file.type.startsWith('image/') || file.type.startsWith('video/') ? URL.createObjectURL(file) : null,
-        rawFile: file
-      }));
+      const newFiles = validFiles.map(file => {
+        const fileType = getFileType(file.type);
+        // Create preview URL for previewable file types
+        const needsPreviewUrl = file.type.startsWith('image/') ||
+                                file.type.startsWith('video/') ||
+                                file.type.includes('pdf') ||
+                                file.type.startsWith('text/') ||
+                                fileType === 'text';
+
+        return {
+          id: Math.random().toString(36).substr(2, 9),
+          parentId: currentFolder,
+          name: file.name,
+          type: 'file',
+          fileType: fileType,
+          size: formatSize(file.size),
+          date: new Date().toISOString().split('T')[0],
+          starred: false,
+          isTrashed: false,
+          previewUrl: needsPreviewUrl ? URL.createObjectURL(file) : null,
+          rawFile: file
+        };
+      });
 
       setFiles(prev => [...prev, ...newFiles]);
 
+      // Show success message with rename info if applicable
       if (validFiles.length === 1) {
-        showToast(`${validFiles[0].name} uploaded successfully!`);
+        if (renamedFiles.length > 0) {
+          showToast(`${validFiles[0].name} uploaded (renamed to avoid duplicate)`);
+        } else {
+          showToast(`${validFiles[0].name} uploaded successfully!`);
+        }
       } else {
-        showToast(`${validFiles.length} files uploaded successfully!`);
+        if (renamedFiles.length > 0) {
+          showToast(`${validFiles.length} files uploaded (${renamedFiles.length} renamed to avoid duplicates)`);
+        } else {
+          showToast(`${validFiles.length} files uploaded successfully!`);
+        }
       }
 
       setIsUploadModalOpen(false);
@@ -880,6 +930,69 @@ export default function CloudStorageApp() {
           newPassword: '',
           confirmPassword: ''
       });
+  };
+
+  const handleOpenPreview = async (file) => {
+      setPreviewFile(file);
+      setPreviewFileContent(null);
+
+      // For text files, read the content
+      const textTypes = ['text', 'pdf', 'word', 'excel'];
+      if (file.rawFile && textTypes.includes(file.fileType)) {
+          if (file.fileType === 'text') {
+              try {
+                  const content = await new Promise((resolve, reject) => {
+                      const reader = new FileReader();
+                      reader.onload = (e) => resolve(e.target.result);
+                      reader.onerror = () => reject(new Error('Failed to read file'));
+                      reader.readAsText(file.rawFile);
+                  });
+                  setPreviewFileContent(content);
+              } catch (error) {
+                  console.error('Error reading file:', error);
+                  setPreviewFileContent(null);
+              }
+          }
+      }
+  };
+
+  const handleShare = () => {
+      const selectedFiles = Array.from(selectedIds).map(id => files.find(f => f.id === id)).filter(Boolean);
+
+      if (selectedFiles.length === 0) {
+          showToast("Please select files to share");
+          return;
+      }
+
+      // Generate a unique share ID
+      const shareId = Math.random().toString(36).substr(2, 9);
+      const baseUrl = window.location.origin;
+      const link = `${baseUrl}/shared/${shareId}`;
+
+      setShareLink(link);
+      setShareModalOpen(true);
+  };
+
+  const copyShareLink = async () => {
+      try {
+          await navigator.clipboard.writeText(shareLink);
+          showToast("Link copied to clipboard!");
+      } catch (error) {
+          // Fallback for older browsers
+          const textArea = document.createElement('textarea');
+          textArea.value = shareLink;
+          textArea.style.position = 'fixed';
+          textArea.style.left = '-999999px';
+          document.body.appendChild(textArea);
+          textArea.select();
+          try {
+              document.execCommand('copy');
+              showToast("Link copied to clipboard!");
+          } catch (err) {
+              showToast("Failed to copy link");
+          }
+          document.body.removeChild(textArea);
+      }
   };
 
   const handleAISummary = async (file) => {
@@ -1349,7 +1462,7 @@ export default function CloudStorageApp() {
                             <Album className="w-5 h-5" />
                         </button>
 
-                    <button className="p-1.5 hover:bg-indigo-500 rounded-lg transition-colors" title="Share">
+                    <button onClick={handleShare} className="p-1.5 hover:bg-indigo-500 rounded-lg transition-colors" title="Share">
                         <Share2 className="w-5 h-5" />
                     </button>
                     <button 
@@ -1429,7 +1542,7 @@ export default function CloudStorageApp() {
                             }}
                             onDoubleClick={(e) => {
                                 e.stopPropagation();
-                                if (item.type === 'file') setPreviewFile(item);
+                                if (item.type === 'file') handleOpenPreview(item);
                                 if (item.type === 'folder') handleFolderClick(item);
                             }}
                             className={`group relative flex flex-col p-3 rounded-2xl border transition-all cursor-pointer duration-200 ${
@@ -1667,7 +1780,7 @@ export default function CloudStorageApp() {
                                         <span>Restore</span>
                                     </button>
                                 )}
-                                <button onClick={() => setPreviewFile(activeFile)} className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${textMain}`}>
+                                <button onClick={() => handleOpenPreview(activeFile)} className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors hover:bg-gray-100 dark:hover:bg-gray-700 ${textMain}`}>
                                     <Eye className="w-4 h-4" />
                                     <span>Full Preview</span>
                                 </button>
@@ -1703,6 +1816,59 @@ export default function CloudStorageApp() {
                     >
                         Yes, Delete All
                     </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* Share Modal */}
+      {shareModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className={`rounded-2xl shadow-2xl w-full max-w-md p-6 ${bgPanel}`}>
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className={`text-xl font-bold ${textMain}`}>Share Files</h3>
+                    <button
+                        onClick={() => setShareModalOpen(false)}
+                        className={`p-1 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 ${textSec}`}
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <div className="mb-4">
+                    <p className={`text-sm mb-3 ${textSec}`}>
+                        Anyone with this link can view the selected files
+                    </p>
+
+                    <div className={`flex items-center gap-2 p-3 rounded-lg border ${userProfile.darkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-50 border-gray-200'}`}>
+                        <input
+                            type="text"
+                            value={shareLink}
+                            readOnly
+                            className={`flex-1 bg-transparent outline-none text-sm ${textMain}`}
+                        />
+                    </div>
+                </div>
+
+                <div className="flex gap-3">
+                    <button
+                        onClick={() => setShareModalOpen(false)}
+                        className={`flex-1 py-2.5 rounded-lg font-medium transition-colors ${userProfile.darkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    >
+                        Close
+                    </button>
+                    <button
+                        onClick={copyShareLink}
+                        className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors shadow-lg"
+                    >
+                        Copy Link
+                    </button>
+                </div>
+
+                <div className={`mt-4 pt-4 border-t ${borderCol}`}>
+                    <p className={`text-xs ${textSec}`}>
+                        <strong>Note:</strong> This is a demo link. In production, files would be securely shared with proper access controls.
+                    </p>
                 </div>
             </div>
         </div>
@@ -2287,6 +2453,34 @@ export default function CloudStorageApp() {
                         <img src={previewFile.previewUrl} alt="preview" className="max-w-full max-h-[80vh] object-contain" />
                     ) : previewFile.fileType === 'video' && previewFile.previewUrl ? (
                          <video controls src={previewFile.previewUrl} className="max-w-full max-h-[80vh]" />
+                    ) : previewFile.fileType === 'pdf' && previewFile.previewUrl ? (
+                        <iframe
+                            src={previewFile.previewUrl}
+                            className="w-full h-[80vh] bg-white"
+                            title="PDF Preview"
+                        />
+                    ) : previewFile.fileType === 'text' && previewFileContent ? (
+                        <div className="w-full h-[80vh] overflow-auto bg-gray-900 p-6">
+                            <pre className="text-gray-100 text-sm font-mono whitespace-pre-wrap break-words">
+                                {previewFileContent}
+                            </pre>
+                        </div>
+                    ) : previewFile.fileType === 'word' || previewFile.fileType === 'excel' ? (
+                        <div className="text-center text-gray-300 px-6">
+                             <FileText className="w-24 h-24 mx-auto mb-4 opacity-50" />
+                             <p className="text-xl mb-2">Office Document Preview</p>
+                             <p className="text-sm text-gray-400 mb-6 max-w-md mx-auto">
+                                 Preview for Word and Excel documents requires downloading the file.
+                                 Click the download button above to view the document.
+                             </p>
+                             <button
+                                onClick={() => downloadFile(previewFile)}
+                                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors inline-flex items-center space-x-2"
+                             >
+                                <Download className="w-5 h-5" />
+                                <span>Download to View</span>
+                             </button>
+                        </div>
                     ) : (
                         <div className="text-center text-gray-300">
                              <FileText className="w-24 h-24 mx-auto mb-4 opacity-50" />
