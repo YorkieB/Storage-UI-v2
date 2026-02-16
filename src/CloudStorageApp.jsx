@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import api from './api/client';
+import LoginModal from './components/LoginModal';
 import { 
   Folder, 
   FileText, 
@@ -466,15 +468,20 @@ export default function CloudStorageApp() {
   const [generationPrompt, setGenerationPrompt] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // Authentication State
+  const [isAuthenticated, setIsAuthenticated] = useState(api.isAuthenticated());
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(!api.isAuthenticated());
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+
   // User & Settings State
   const [userProfile, setUserProfile] = useState({
-      name: 'John Doe',
-      email: 'john.doe@example.com',
-      storageUsed: 0, // Initial 0, will fetch
-      storageLimit: 0, // Initial 0, will fetch
+      name: 'User',
+      email: '',
+      storageUsed: 0,
+      storageLimit: 0,
       notifications: true,
       darkMode: false,
-      avatar: null // Stores image URL
+      avatar: null
   });
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -630,145 +637,69 @@ export default function CloudStorageApp() {
     setAiResponse("");
   };
 
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const uploadedFiles = Array.from(e.target.files);
     if (uploadedFiles.length === 0) return;
 
-    // Define allowed file types
-    const allowedTypes = [
-      // Images
-      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp',
-      // Videos
-      'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
-      // Audio
-      'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/aac',
-      // Documents
-      'application/pdf',
-      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      // Text
-      'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/json', 'text/csv',
-      'application/xml', 'text/xml',
-      // Archives
-      'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed', 'application/x-tar',
-      // Code files
-      'application/x-python', 'text/x-python', 'application/x-java', 'text/x-java',
-      // Other
-      'application/octet-stream' // Generic binary
-    ];
-
-    // Get existing file names in current folder
-    const existingFileNames = files
-      .filter(f => f.type === 'file' && f.parentId === currentFolder && !f.isTrashed)
-      .map(f => f.name.toLowerCase());
-
-    // Helper function to generate unique filename
-    const getUniqueFileName = (originalName, existingNames) => {
-      let fileName = originalName;
-      let counter = 1;
-
-      // Split filename and extension
-      const lastDotIndex = originalName.lastIndexOf('.');
-      const name = lastDotIndex > 0 ? originalName.substring(0, lastDotIndex) : originalName;
-      const ext = lastDotIndex > 0 ? originalName.substring(lastDotIndex) : '';
-
-      // Keep incrementing counter until we find a unique name
-      while (existingNames.includes(fileName.toLowerCase())) {
-        fileName = `${name} (${counter})${ext}`;
-        counter++;
-      }
-
-      return fileName;
-    };
-
-    // Validate files
-    const validFiles = [];
+    const successfulUploads = [];
     const errors = [];
-    const renamedFiles = [];
+
+    showToast(`Uploading ${uploadedFiles.length} file(s)...`);
 
     for (const file of uploadedFiles) {
-      // Check file type
-      if (!allowedTypes.includes(file.type) && file.type !== '') {
-        errors.push(`${file.name}: File type not supported (${file.type})`);
-        continue;
+      try {
+        const response = await api.uploadFile(file, currentFolder);
+        if (response.success) {
+          const uploadedFile = response.data;
+          const newFile = {
+            id: uploadedFile.id,
+            parentId: uploadedFile.folderId,
+            name: uploadedFile.name,
+            type: 'file',
+            fileType: uploadedFile.fileType,
+            size: uploadedFile.size, // Already formatted by backend
+            date: new Date(uploadedFile.createdAt).toISOString().split('T')[0],
+            starred: uploadedFile.isStarred,
+            isTrashed: uploadedFile.isTrashed,
+            previewUrl: uploadedFile.url,
+            rawFile: null,
+            backendId: uploadedFile.id,
+          };
+          successfulUploads.push(newFile);
+        }
+      } catch (error) {
+        errors.push(`${file.name}: ${error.message}`);
       }
+    }
 
-      // Auto-rename if duplicate
-      let finalFileName = file.name;
-      if (existingFileNames.includes(file.name.toLowerCase())) {
-        finalFileName = getUniqueFileName(file.name, existingFileNames);
-        renamedFiles.push({ original: file.name, renamed: finalFileName });
-        // Add the new name to existing names to prevent conflicts with subsequent uploads
-        existingFileNames.push(finalFileName.toLowerCase());
+    // Add successful uploads to state
+    if (successfulUploads.length > 0) {
+      setFiles(prev => [...prev, ...successfulUploads]);
+
+      // Update storage used
+      const profileResponse = await api.getProfile();
+      if (profileResponse.success) {
+        setUserProfile(prev => ({
+          ...prev,
+          storageUsed: profileResponse.data.storageUsed,
+        }));
       }
+    }
 
-      // Create a new File object with the updated name if renamed
-      const finalFile = finalFileName !== file.name
-        ? new File([file], finalFileName, { type: file.type })
-        : file;
-
-      validFiles.push(finalFile);
+    // Show results
+    if (successfulUploads.length === uploadedFiles.length) {
+      showToast(`${successfulUploads.length} file(s) uploaded successfully!`);
+      setIsUploadModalOpen(false);
+    } else if (successfulUploads.length > 0) {
+      showToast(`${successfulUploads.length} uploaded, ${errors.length} failed`);
+    } else {
+      showToast(`All uploads failed: ${errors[0]}`);
+      return; // Don't close modal if all failed
     }
 
     // Show errors if any
-    if (errors.length > 0) {
-      if (errors.length === 1) {
-        showToast(errors[0]);
-      } else if (errors.length <= 3) {
-        showToast(errors.join('; '));
-      } else {
-        showToast(`${errors.length} files could not be uploaded. Check file types and duplicate names.`);
-      }
-    }
-
-    // Upload valid files
-    if (validFiles.length > 0) {
-      const newFiles = validFiles.map(file => {
-        const fileType = getFileType(file.type);
-        // Create preview URL for previewable file types
-        const needsPreviewUrl = file.type.startsWith('image/') ||
-                                file.type.startsWith('video/') ||
-                                file.type.includes('pdf') ||
-                                file.type.startsWith('text/') ||
-                                fileType === 'text';
-
-        return {
-          id: Math.random().toString(36).substr(2, 9),
-          parentId: currentFolder,
-          name: file.name,
-          type: 'file',
-          fileType: fileType,
-          size: formatSize(file.size),
-          date: new Date().toISOString().split('T')[0],
-          starred: false,
-          isTrashed: false,
-          previewUrl: needsPreviewUrl ? URL.createObjectURL(file) : null,
-          rawFile: file
-        };
-      });
-
-      setFiles(prev => [...prev, ...newFiles]);
-
-      // Show success message with rename info if applicable
-      if (validFiles.length === 1) {
-        if (renamedFiles.length > 0) {
-          showToast(`${validFiles[0].name} uploaded (renamed to avoid duplicate)`);
-        } else {
-          showToast(`${validFiles[0].name} uploaded successfully!`);
-        }
-      } else {
-        if (renamedFiles.length > 0) {
-          showToast(`${validFiles.length} files uploaded (${renamedFiles.length} renamed to avoid duplicates)`);
-        } else {
-          showToast(`${validFiles.length} files uploaded successfully!`);
-        }
-      }
-
-      setIsUploadModalOpen(false);
-    } else if (errors.length === uploadedFiles.length) {
-      // All files failed, don't close modal
-      return;
+    if (errors.length > 0 && errors.length <= 3) {
+      setTimeout(() => showToast(errors.join('; ')), 1500);
     }
 
     // Reset file input
@@ -819,22 +750,37 @@ export default function CloudStorageApp() {
       setSelectedIds(new Set());
   };
 
-  const handleRename = () => {
+  const handleRename = async () => {
     if (!renameValue.trim() || !renameItem) return;
-    setFiles(files.map(f => f.id === renameItem.id ? { ...f, name: renameValue } : f));
-    setRenameItem(null);
-    setRenameValue('');
+
+    try {
+      await api.updateFile(renameItem.id, { name: renameValue });
+      setFiles(files.map(f => f.id === renameItem.id ? { ...f, name: renameValue } : f));
+      setRenameItem(null);
+      setRenameValue('');
+      showToast('File renamed successfully');
+    } catch (error) {
+      showToast('Failed to rename file');
+    }
   };
 
-  const moveToTrash = () => {
-    // If called from Preview Pane (activeFile but no selectedIds), handle activeFile
-    if (selectedIds.size === 0 && activeFile) {
-        setFiles(files.map(f => f.id === activeFile.id ? { ...f, isTrashed: true, starred: false } : f));
-        setPreviewPaneOpen(false); // Close preview after deleting
-    } else {
-        setFiles(files.map(f => selectedIds.has(f.id) ? { ...f, isTrashed: true, starred: false } : f));
+  const moveToTrash = async () => {
+    const idsToTrash = selectedIds.size === 0 && activeFile ? [activeFile.id] : Array.from(selectedIds);
+
+    for (const id of idsToTrash) {
+      try {
+        await api.trashFile(id);
+      } catch (error) {
+        console.error('Error trashing file:', error);
+      }
     }
+
+    // Update local state
+    setFiles(files.map(f => idsToTrash.includes(f.id) ? { ...f, isTrashed: true, starred: false } : f));
     setSelectedIds(new Set());
+    if (activeFile && idsToTrash.includes(activeFile.id)) {
+      setPreviewPaneOpen(false);
+    }
   };
 
   const openMoveModal = () => {
@@ -862,14 +808,43 @@ export default function CloudStorageApp() {
       showToast(filesToMove.length === 1 ? "File moved successfully" : "Files moved successfully");
   };
 
-  const restoreFromTrash = () => {
-    setFiles(files.map(f => selectedIds.has(f.id) ? { ...f, isTrashed: false } : f));
+  const restoreFromTrash = async () => {
+    const idsToRestore = Array.from(selectedIds);
+
+    for (const id of idsToRestore) {
+      try {
+        await api.restoreFile(id);
+      } catch (error) {
+        console.error('Error restoring file:', error);
+      }
+    }
+
+    setFiles(files.map(f => idsToRestore.includes(f.id) ? { ...f, isTrashed: false } : f));
     setSelectedIds(new Set());
   };
 
-  const deletePermanently = () => {
-    setFiles(files.filter(f => !selectedIds.has(f.id)));
+  const deletePermanently = async () => {
+    const idsToDelete = Array.from(selectedIds);
+
+    for (const id of idsToDelete) {
+      try {
+        await api.deleteFile(id);
+      } catch (error) {
+        console.error('Error deleting file:', error);
+      }
+    }
+
+    setFiles(files.filter(f => !idsToDelete.includes(f.id)));
     setSelectedIds(new Set());
+
+    // Update storage used
+    const profileResponse = await api.getProfile();
+    if (profileResponse.success) {
+      setUserProfile(prev => ({
+        ...prev,
+        storageUsed: profileResponse.data.storageUsed,
+      }));
+    }
   };
 
   const confirmEmptyTrash = () => {
@@ -878,9 +853,17 @@ export default function CloudStorageApp() {
       showToast('Trash emptied successfully');
   };
 
-  const toggleStar = (e, id) => {
+  const toggleStar = async (e, id) => {
     e.stopPropagation();
-    setFiles(files.map(f => f.id === id ? { ...f, starred: !f.starred } : f));
+    const file = files.find(f => f.id === id);
+    if (!file) return;
+
+    try {
+      await api.updateFile(id, { isStarred: !file.starred });
+      setFiles(files.map(f => f.id === id ? { ...f, starred: !f.starred } : f));
+    } catch (error) {
+      showToast('Failed to update file');
+    }
   };
 
   const saveSettings = () => {
@@ -896,6 +879,133 @@ export default function CloudStorageApp() {
           setSettingsForm({ ...settingsForm, avatar: url });
       }
   };
+
+  // Authentication handlers
+  const handleLogin = async (email, password) => {
+    try {
+      const response = await api.login(email, password);
+      setIsAuthenticated(true);
+      setIsLoginModalOpen(false);
+
+      // Fetch user profile
+      const profileResponse = await api.getProfile();
+      if (profileResponse.success) {
+        setUserProfile({
+          name: profileResponse.data.fullName || 'User',
+          email: profileResponse.data.email,
+          storageUsed: profileResponse.data.storageUsed || 0,
+          storageLimit: profileResponse.data.storageLimit || 10737418240,
+          notifications: true,
+          darkMode: profileResponse.data.darkMode || false,
+          avatar: profileResponse.data.avatarUrl || null,
+        });
+      }
+
+      // Load files and folders from backend
+      await loadFilesAndFolders();
+
+      showToast('Welcome back!');
+    } catch (error) {
+      throw error; // Let the login modal handle the error
+    }
+  };
+
+  const handleLogout = () => {
+    api.logout();
+    setIsAuthenticated(false);
+    setIsLoginModalOpen(true);
+    setFiles([]);
+    setFolders([]);
+    setUserProfile({
+      name: 'User',
+      email: '',
+      storageUsed: 0,
+      storageLimit: 0,
+      notifications: true,
+      darkMode: false,
+      avatar: null,
+    });
+    showToast('Logged out successfully');
+  };
+
+  // Load files and folders from backend
+  const loadFilesAndFolders = async () => {
+    try {
+      // Load all files
+      const filesResponse = await api.getFiles({ trashed: false });
+      if (filesResponse.success) {
+        const apiFiles = filesResponse.data.map(file => ({
+          id: file.id,
+          parentId: file.folderId,
+          name: file.name,
+          type: 'file',
+          fileType: file.fileType,
+          size: formatSize(file.size),
+          date: new Date(file.createdAt).toISOString().split('T')[0],
+          starred: file.isStarred,
+          isTrashed: file.isTrashed,
+          previewUrl: file.url,
+          rawFile: null, // Files from backend don't have rawFile
+          backendId: file.id, // Store backend ID for API calls
+        }));
+        setFiles(apiFiles);
+      }
+
+      // Load all folders
+      const foldersResponse = await api.getFolders();
+      if (foldersResponse.success) {
+        const apiFolders = foldersResponse.data.map(folder => ({
+          id: folder.id,
+          parentId: folder.parentId,
+          name: folder.name,
+          type: 'folder',
+          date: new Date(folder.createdAt).toISOString().split('T')[0],
+          color: folder.color || '#4F46E5',
+          isTrashed: folder.isTrashed,
+          backendId: folder.id, // Store backend ID
+        }));
+        setFolders(apiFolders);
+      }
+    } catch (error) {
+      console.error('Error loading files and folders:', error);
+      showToast('Failed to load files');
+    }
+  };
+
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      if (api.isAuthenticated()) {
+        try {
+          const response = await api.getProfile();
+          if (response.success) {
+            setUserProfile({
+              name: response.data.fullName || 'User',
+              email: response.data.email,
+              storageUsed: response.data.storageUsed || 0,
+              storageLimit: response.data.storageLimit || 10737418240,
+              notifications: true,
+              darkMode: response.data.darkMode || false,
+              avatar: response.data.avatarUrl || null,
+            });
+            setIsAuthenticated(true);
+            setIsLoginModalOpen(false);
+
+            // Load files and folders
+            await loadFilesAndFolders();
+          }
+        } catch (error) {
+          console.error('Auth check failed:', error);
+          api.clearTokens();
+          setIsAuthenticated(false);
+          setIsLoginModalOpen(true);
+        }
+      }
+      setIsLoadingAuth(false);
+    };
+
+    checkAuth();
+  }, []);
 
   const handlePasswordChange = () => {
       // Validation
@@ -2492,6 +2602,14 @@ export default function CloudStorageApp() {
             </div>
         </div>
       )}
+
+      {/* Login Modal */}
+      <LoginModal
+        isOpen={isLoginModalOpen}
+        onClose={() => {}} // Don't allow closing without login
+        onLogin={handleLogin}
+        darkMode={userProfile.darkMode}
+      />
 
     </div>
   );
