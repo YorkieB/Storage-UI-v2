@@ -502,6 +502,11 @@ export default function CloudStorageApp() {
 
   const [settingsForm, setSettingsForm] = useState(userProfile);
   const [activeSettingsTab, setActiveSettingsTab] = useState('account');
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
 
   // --- Handlers ---
 
@@ -626,22 +631,98 @@ export default function CloudStorageApp() {
     const uploadedFiles = Array.from(e.target.files);
     if (uploadedFiles.length === 0) return;
 
-    const newFiles = uploadedFiles.map(file => ({
-      id: Math.random().toString(36).substr(2, 9),
-      parentId: currentFolder,
-      name: file.name,
-      type: 'file',
-      fileType: getFileType(file.type),
-      size: formatSize(file.size),
-      date: new Date().toISOString().split('T')[0],
-      starred: false,
-      isTrashed: false,
-      previewUrl: file.type.startsWith('image/') || file.type.startsWith('video/') ? URL.createObjectURL(file) : null,
-      rawFile: file
-    }));
+    // Define allowed file types
+    const allowedTypes = [
+      // Images
+      'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp',
+      // Videos
+      'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
+      // Audio
+      'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/aac',
+      // Documents
+      'application/pdf',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      // Text
+      'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/json', 'text/csv',
+      'application/xml', 'text/xml',
+      // Archives
+      'application/zip', 'application/x-rar-compressed', 'application/x-7z-compressed', 'application/x-tar',
+      // Code files
+      'application/x-python', 'text/x-python', 'application/x-java', 'text/x-java',
+      // Other
+      'application/octet-stream' // Generic binary
+    ];
 
-    setFiles(prev => [...prev, ...newFiles]);
-    setIsUploadModalOpen(false);
+    // Get existing file names in current folder
+    const existingFileNames = files
+      .filter(f => f.type === 'file' && f.parentId === currentFolder && !f.isTrashed)
+      .map(f => f.name.toLowerCase());
+
+    // Validate files
+    const validFiles = [];
+    const errors = [];
+
+    for (const file of uploadedFiles) {
+      // Check file type
+      if (!allowedTypes.includes(file.type) && file.type !== '') {
+        errors.push(`${file.name}: File type not supported (${file.type})`);
+        continue;
+      }
+
+      // Check for duplicates
+      if (existingFileNames.includes(file.name.toLowerCase())) {
+        errors.push(`${file.name}: A file with this name already exists`);
+        continue;
+      }
+
+      validFiles.push(file);
+    }
+
+    // Show errors if any
+    if (errors.length > 0) {
+      if (errors.length === 1) {
+        showToast(errors[0]);
+      } else if (errors.length <= 3) {
+        showToast(errors.join('; '));
+      } else {
+        showToast(`${errors.length} files could not be uploaded. Check file types and duplicate names.`);
+      }
+    }
+
+    // Upload valid files
+    if (validFiles.length > 0) {
+      const newFiles = validFiles.map(file => ({
+        id: Math.random().toString(36).substr(2, 9),
+        parentId: currentFolder,
+        name: file.name,
+        type: 'file',
+        fileType: getFileType(file.type),
+        size: formatSize(file.size),
+        date: new Date().toISOString().split('T')[0],
+        starred: false,
+        isTrashed: false,
+        previewUrl: file.type.startsWith('image/') || file.type.startsWith('video/') ? URL.createObjectURL(file) : null,
+        rawFile: file
+      }));
+
+      setFiles(prev => [...prev, ...newFiles]);
+
+      if (validFiles.length === 1) {
+        showToast(`${validFiles[0].name} uploaded successfully!`);
+      } else {
+        showToast(`${validFiles.length} files uploaded successfully!`);
+      }
+
+      setIsUploadModalOpen(false);
+    } else if (errors.length === uploadedFiles.length) {
+      // All files failed, don't close modal
+      return;
+    }
+
+    // Reset file input
+    e.target.value = '';
   };
 
   const createFolder = () => {
@@ -764,6 +845,41 @@ export default function CloudStorageApp() {
           const url = URL.createObjectURL(file);
           setSettingsForm({ ...settingsForm, avatar: url });
       }
+  };
+
+  const handlePasswordChange = () => {
+      // Validation
+      if (!passwordForm.currentPassword) {
+          showToast("Please enter your current password");
+          return;
+      }
+      if (!passwordForm.newPassword) {
+          showToast("Please enter a new password");
+          return;
+      }
+      if (passwordForm.newPassword.length < 8) {
+          showToast("New password must be at least 8 characters");
+          return;
+      }
+      if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+          showToast("New passwords do not match");
+          return;
+      }
+      if (passwordForm.currentPassword === passwordForm.newPassword) {
+          showToast("New password must be different from current password");
+          return;
+      }
+
+      // In a real app, you'd validate the current password against the backend
+      // For now, we'll simulate success
+      showToast("Password changed successfully!");
+
+      // Clear the password form
+      setPasswordForm({
+          currentPassword: '',
+          newPassword: '',
+          confirmPassword: ''
+      });
   };
 
   const handleAISummary = async (file) => {
@@ -1868,16 +1984,33 @@ export default function CloudStorageApp() {
                                       <div className={`pt-4 border-t ${borderCol}`}>
                                           <h3 className={`text-sm font-medium mb-3 ${textMain}`}>Password</h3>
                                           <div className="space-y-3">
-                                              <input 
-                                                  type="password" 
+                                              <input
+                                                  type="password"
                                                   placeholder="Current Password"
+                                                  value={passwordForm.currentPassword}
+                                                  onChange={(e) => setPasswordForm({...passwordForm, currentPassword: e.target.value})}
                                                   className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none ${userProfile.darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}
                                               />
-                                              <input 
-                                                  type="password" 
-                                                  placeholder="New Password"
+                                              <input
+                                                  type="password"
+                                                  placeholder="New Password (min 8 characters)"
+                                                  value={passwordForm.newPassword}
+                                                  onChange={(e) => setPasswordForm({...passwordForm, newPassword: e.target.value})}
                                                   className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none ${userProfile.darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}
                                               />
+                                              <input
+                                                  type="password"
+                                                  placeholder="Confirm New Password"
+                                                  value={passwordForm.confirmPassword}
+                                                  onChange={(e) => setPasswordForm({...passwordForm, confirmPassword: e.target.value})}
+                                                  className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none ${userProfile.darkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300'}`}
+                                              />
+                                              <button
+                                                  onClick={handlePasswordChange}
+                                                  className="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium shadow-sm transition-colors"
+                                              >
+                                                  Change Password
+                                              </button>
                                           </div>
                                       </div>
                                   </div>
