@@ -18,6 +18,13 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Test output
+coverage/
+.vitest-result
+
+# Tool caches
+.biome_cache
+
 # Logs
 *.log
 npm-debug.log*
